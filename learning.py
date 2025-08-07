@@ -62,21 +62,21 @@ def analyze_and_adapt_profiles(config: Dict[str, Any]) -> Dict[str, Any]:
             logging.info("Profil '%s': Data feedback tidak cukup (%d dari %d), menggunakan bobot dasar.", profile_name, len(recent_trades), min_trades)
             continue
 
-        # Analisis win rate per komponen 'info'
+        # Analisis win rate per komponen 'score_components'
         component_performance = {}
         for trade in recent_trades:
-            info_components = trade.get("info", "").split('; ')
+            # --- PERUBAHAN: Menggunakan 'score_components' yang terstruktur ---
+            # Logika parsing string yang lama dan rapuh telah dihapus.
+            components = trade.get("score_components", [])
             result = 1 if trade.get("result") == "win" else 0
             
-            for component in info_components:
+            for component in components:
                 if not component: continue
-                # Ekstrak nama komponen (misal: "BULLISH_OB" dari "BUY_LIMIT based on BULLISH_OB OTE")
-                clean_comp = component.split(' ')[-1] if "based on" in component else component.split(' ')[0]
                 
-                if clean_comp not in component_performance:
-                    component_performance[clean_comp] = {'wins': 0, 'total': 0}
-                component_performance[clean_comp]['wins'] += result
-                component_performance[clean_comp]['total'] += 1
+                if component not in component_performance:
+                    component_performance[component] = {'wins': 0, 'total': 0}
+                component_performance[component]['wins'] += result
+                component_performance[component]['total'] += 1
         
         # Adaptasi bobot berdasarkan kinerja komponen
         win_rate_target = learning_params.get("win_rate_target", 0.60)

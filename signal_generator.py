@@ -9,7 +9,7 @@ from collections import Counter
 
 import MetaTrader5 as mt5
 
-from data_fetching import get_candlestick_data
+from data_fetching import get_candlestick_data, MT5Connection
 from technical_indicators import (
     detect_structure,
     detect_order_blocks_multi,
@@ -28,25 +28,31 @@ from gng_model import (
 )
 
 def get_open_positions_per_tf(symbol: str, tf: str, mt5_path: str) -> int:
-    if not mt5.initialize(path=mt5_path): return 99
-    positions = mt5.positions_get(symbol=symbol)
-    mt5.shutdown()
-    return len(positions) if positions is not None else 0
+    try:
+        with MT5Connection(mt5_path) as mt5_conn:
+            positions = mt5_conn.positions_get(symbol=symbol)
+            return len(positions) if positions is not None else 0
+    except ConnectionError:
+        return 99 # Return a high number to prevent new trades if connection fails
 
 def get_active_orders(symbol: str, mt5_path: str) -> List[float]:
-    if not mt5.initialize(path=mt5_path): return []
     active_prices: List[float] = []
     try:
-        positions = mt5.positions_get(symbol=symbol)
-        if positions:
-            for pos in positions: active_prices.append(pos.price_open)
-        orders = mt5.orders_get(symbol=symbol)
-        if orders:
-            for order in orders: active_prices.append(order.price_open)
+        with MT5Connection(mt5_path) as mt5_conn:
+            positions = mt5_conn.positions_get(symbol=symbol)
+            if positions:
+                for pos in positions:
+                    active_prices.append(pos.price_open)
+
+            orders = mt5_conn.orders_get(symbol=symbol)
+            if orders:
+                for order in orders:
+                    active_prices.append(order.price_open)
+    except ConnectionError:
+        logging.error("Koneksi MT5 gagal saat mengambil order/posisi aktif.")
     except Exception as e:
         logging.error(f"Error saat mengambil order/posisi aktif: {e}")
-    finally:
-        mt5.shutdown()
+
     return active_prices
 
 def is_far_enough(entry_price: float, existing_prices: List[float], point_value: float, min_distance_pips: float) -> bool:
@@ -119,44 +125,60 @@ def analyze_tf_opportunity(
     # --- Kalkulasi Skor ---
     score = 0.0
     info_list: List[str] = []
+    score_components: List[str] = []  # <<< PERUBAHAN: Daftar untuk komponen skor
     logging.info(f"[Arshy | {tf}] --- Memulai Analisis Konfluensi ---")
     
     # Skor Struktur
     structure_score = 0
-    if "BULLISH_BOS" in structure_str: structure_score += weights.get("BULLISH_BOS", 3.0)
-    if "BEARISH_BOS" in structure_str: structure_score += weights.get("BEARISH_BOS", -3.0)
-    if "HH" in structure_str: structure_score += weights.get("HH", 1.0)
-    if "LL" in structure_str: structure_score += weights.get("LL", -1.0)
-    if "HL" in structure_str: structure_score += weights.get("HL", 1.0)
-    if "LH" in structure_str: structure_score += weights.get("LH", -1.0)
+    structure_components = [s.strip() for s in structure_str.split(',')]
+    for component in structure_components:
+        if component in weights:
+            weight = weights.get(component, 0.0)
+            structure_score += weight
+            if weight != 0: score_components.append(component)
     score += structure_score
     logging.info(f"[Arshy | {tf}] Analisis Struktur: Teridentifikasi '{structure_str}' (Skor: {structure_score:+.2f})")
 
     # Skor Zona (FVG, OB) & Event (LS)
     if fvg_zones:
         nearest_fvg = fvg_zones[0]
-        fvg_score = (weights.get('FVG_BULLISH', 3.0) if 'BULLISH' in nearest_fvg['type'] else weights.get('FVG_BEARISH', -3.0)) * nearest_fvg['strength']
+        fvg_type = 'FVG_BULLISH' if 'BULLISH' in nearest_fvg['type'] else 'FVG_BEARISH'
+        fvg_score = weights.get(fvg_type, 0.0) * nearest_fvg['strength']
         score += fvg_score
+        if fvg_score != 0: score_components.append(fvg_type)
         logging.info(f"[Arshy | {tf}] Zona Inefisiensi (FVG): {nearest_fvg['type']} terdeteksi (Skor: {fvg_score:+.2f})")
     if liquidity_sweep:
-        ls_score = weights.get(liquidity_sweep[-1].get('type'))
+        ls_type = liquidity_sweep[-1].get('type')
+        ls_score = weights.get(ls_type)
         if ls_score:
             score += ls_score
-            logging.info(f"[Arshy | {tf}] Perburuan Likuiditas (Sweep): {liquidity_sweep[-1].get('type')} terdeteksi (Skor: {ls_score:+.2f})")
+            score_components.append(ls_type)
+            logging.info(f"[Arshy | {tf}] Perburuan Likuiditas (Sweep): {ls_type} terdeteksi (Skor: {ls_score:+.2f})")
     if liquidity_grabs:
         grab = liquidity_grabs[-1] # Ambil yang terbaru
-        grab_score = weights.get(grab.get('type'), 0.0) * grab.get('strength', 1.0)
+        grab_type = grab.get('type')
+        grab_score = weights.get(grab_type, 0.0) * grab.get('strength', 1.0)
         if grab_score != 0:
             score += grab_score
+            score_components.append(grab_type)
             logging.info(f"[Arshy | {tf}] Perburuan Likuiditas (Grab): {grab.get('type')} pada level {grab.get('swept_level'):.4f} terdeteksi (Skor: {grab_score:+.2f})")
     if order_blocks:
         nearest_ob = order_blocks[0]
-        ob_score = (weights.get('BULLISH_OB', 1.0) if 'BULLISH' in nearest_ob['type'] else weights.get('BEARISH_OB', -1.0)) * nearest_ob['strength']
+        ob_type = 'BULLISH_OB' if 'BULLISH' in nearest_ob['type'] else 'BEARISH_OB'
+        ob_score = weights.get(ob_type, 0.0) * nearest_ob['strength']
         score += ob_score
+        if ob_score != 0: score_components.append(ob_type)
         logging.info(f"[Arshy | {tf}] Zona Order Block: {nearest_ob['type']} terdeteksi (Skor: {ob_score:+.2f})")
 
     # Skor Pola Minor
-    pattern_score = sum(weights.get(p.get('type'), 0) for p in patterns)
+    pattern_score = 0
+    for p in patterns:
+        pattern_type = p.get('type')
+        if pattern_type in weights:
+            p_score = weights.get(pattern_type, 0.0)
+            pattern_score += p_score
+            if p_score != 0: score_components.append(pattern_type)
+
     if pattern_score != 0:
         bullish_patterns = [p.get('type') for p in patterns if weights.get(p.get('type'), 0) > 0]
         bearish_patterns = [p.get('type') for p in patterns if weights.get(p.get('type'), 0) < 0]
@@ -257,4 +279,5 @@ def analyze_tf_opportunity(
         "sl": sl, "tp": tp, "score": score, "info": "; ".join(info_list),
         "features": get_gng_input_features_full(df, gng_feature_stats, tf) if gng_model else None, 
         "tf": tf, "symbol": symbol,
+        "score_components": score_components # <<< PERUBAHAN: Menambahkan komponen ke hasil
     }
