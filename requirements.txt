@@ -1,0 +1,11 @@
+xgboost
+numpy
+flask
+flask-socketio
+python-socketio
+eventlet
+Flask-WTF
+python-dateutil
+pandas
+pytest
+matplotlib

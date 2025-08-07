@@ -57,38 +57,55 @@ def robust_mt5_init(mt5_path: str, retry: int = 3, sleep_sec: float = 2.0) -> bo
     return False
 # ====================================================================
 
+import contextlib
+
+# --- Context Manager untuk Koneksi MT5 ---
+@contextlib.contextmanager
+def MT5Connection(mt5_path: str):
+    """Context manager untuk koneksi MT5 yang aman."""
+    logging.debug("Mencoba inisialisasi koneksi MT5...")
+    if not robust_mt5_init(mt5_path, retry=1):
+        raise ConnectionError("Gagal terhubung ke terminal MetaTrader 5 setelah upaya inisialisasi.")
+    try:
+        yield mt5
+    finally:
+        logging.debug("Mematikan koneksi MT5.")
+        mt5.shutdown()
+
 # --- Main Data Fetching Function ---
 def get_candlestick_data(symbol: str, tf: str, bars: int, mt5_path: str, retry: int = 2) -> Optional[pd.DataFrame]:
     """
-    Mengambil data candlestick dari MetaTrader 5, tangguh dan otomatis retry.
+    Mengambil data candlestick dari MetaTrader 5, menggunakan context manager untuk koneksi yang aman.
     """
     try:
         validate_symbol(symbol)
         tf_mt5 = validate_timeframe(tf)
         validate_bars(bars)
-    except Exception as ve:
+    except ValueError as ve:
         logging.error(f"Parameter validation error: {ve}")
         return None
 
-    for attempt in range(1, retry+1):
-        if not robust_mt5_init(mt5_path, retry=1):
-            time.sleep(1) # Beri jeda jika inisialisasi gagal
-            continue
+    for attempt in range(1, retry + 1):
         try:
-            rates = mt5.copy_rates_from_pos(symbol, tf_mt5, 0, bars)
-            if rates is None or len(rates) == 0:
-                logging.warning(f"Tidak ada data dari MT5 untuk {symbol} di {tf}. Upaya {attempt}")
-                mt5.shutdown()
-                continue
-            df = pd.DataFrame(rates)
-            df['time'] = pd.to_datetime(df['time'], unit='s')
-            mt5.shutdown()
-            return df
-        except Exception as e:
-            logging.error(f"Error di get_candlestick_data [{symbol}/{tf}]: {e}", exc_info=True)
-            mt5.shutdown()
+            with MT5Connection(mt5_path) as mt5_conn:
+                rates = mt5_conn.copy_rates_from_pos(symbol, tf_mt5, 0, bars)
+                if rates is None or len(rates) == 0:
+                    logging.warning(f"Tidak ada data dari MT5 untuk {symbol} di {tf}. Upaya {attempt}/{retry}")
+                    # continue to the next retry attempt
+                    time.sleep(1)
+                    continue
+
+                df = pd.DataFrame(rates)
+                df['time'] = pd.to_datetime(df['time'], unit='s')
+                return df # Success, exit the function
+        except ConnectionError:
+            logging.warning(f"Koneksi MT5 gagal pada upaya {attempt}/{retry}. Mencoba lagi...")
             time.sleep(1)
-    logging.error(f"Gagal mengambil data untuk {symbol} di {tf} setelah beberapa kali percobaan.")
+        except Exception as e:
+            logging.error(f"Error tak terduga di get_candlestick_data [{symbol}/{tf}] upaya {attempt}/{retry}: {e}", exc_info=True)
+            time.sleep(1)
+
+    logging.error(f"Gagal mengambil data untuk {symbol} di {tf} setelah {retry} kali percobaan.")
     return None
 
 # --- Bulk Fetcher ---

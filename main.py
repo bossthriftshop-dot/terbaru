@@ -124,7 +124,8 @@ def handle_opportunity(opp: Dict[str, Any], symbol: str, tf: str, config: Dict[s
         "order_type": order_type_to_use,
         "score": opp.get('score'),
         "info": opp.get('info'),
-        "profile_name": profile_name
+        "profile_name": profile_name,
+        "score_components": opp.get('score_components', []) # <<< PERUBAHAN: Menambahkan komponen skor
     }
     
     send_status = send_signal_to_server(**payload)
