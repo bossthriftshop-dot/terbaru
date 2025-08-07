@@ -1,0 +1,20 @@
+{
+    "name": "smart-agent-server",
+    "version": "1.0.0",
+    "description": "A microservice to receive trading signals from the Python AI bot.",
+    "main": "agent_server.js",
+    "scripts": {
+        "start": "node agent_server.js"
+    },
+    "keywords": [
+        "trading",
+        "bot",
+        "agent",
+        "ai"
+    ],
+    "author": "",
+    "license": "ISC",
+    "dependencies": {
+        "express": "^4.17.1"
+    }
+}
