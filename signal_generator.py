@@ -118,6 +118,7 @@ def analyze_tf_opportunity(
     
     # --- Kalkulasi Skor ---
     score = 0.0
+    score_components = {} # <-- DITAMBAHKAN DI SINI
     info_list: List[str] = []
     logging.info(f"[Arshy | {tf}] --- Memulai Analisis Konfluensi ---")
     
@@ -129,6 +130,7 @@ def analyze_tf_opportunity(
     if "LL" in structure_str: structure_score += weights.get("LL", -1.0)
     if "HL" in structure_str: structure_score += weights.get("HL", 1.0)
     if "LH" in structure_str: structure_score += weights.get("LH", -1.0)
+    score_components['structure'] = structure_score
     score += structure_score
     logging.info(f"[Arshy | {tf}] Analisis Struktur: Teridentifikasi '{structure_str}' (Skor: {structure_score:+.2f})")
 
@@ -136,24 +138,29 @@ def analyze_tf_opportunity(
     if fvg_zones:
         nearest_fvg = fvg_zones[0]
         fvg_score = (weights.get('FVG_BULLISH', 3.0) if 'BULLISH' in nearest_fvg['type'] else weights.get('FVG_BEARISH', -3.0)) * nearest_fvg['strength']
+        score_components['fvg'] = fvg_score
         score += fvg_score
-        logging.info(f"[Arshy | {tf}] Zona Inefisiensi (FVG): {nearest_fvg['type']} terdeteksi (Skor: {fvg_score:+.2f})")
+        logging.info(f"[Arshy | {tf}] Zona Inefisiensi (FVG): {nearest_fvg['type']} @ {nearest_fvg['start']:.3f}-{nearest_fvg['end']:.3f} terdeteksi (Skor: {fvg_score:+.2f})")
     if liquidity_sweep:
-        ls_score = weights.get(liquidity_sweep[-1].get('type'))
+        ls_event = liquidity_sweep[-1]
+        ls_score = weights.get(ls_event.get('type'))
         if ls_score:
+            score_components['liquidity_sweep'] = ls_score
             score += ls_score
-            logging.info(f"[Arshy | {tf}] Perburuan Likuiditas (Sweep): {liquidity_sweep[-1].get('type')} terdeteksi (Skor: {ls_score:+.2f})")
+            logging.info(f"[Arshy | {tf}] Perburuan Likuiditas (Sweep): {ls_event.get('type')} @ {ls_event.get('swept_level'):.3f} terdeteksi (Skor: {ls_score:+.2f})")
     if liquidity_grabs:
         grab = liquidity_grabs[-1] # Ambil yang terbaru
         grab_score = weights.get(grab.get('type'), 0.0) * grab.get('strength', 1.0)
         if grab_score != 0:
+            score_components['liquidity_grab'] = grab_score
             score += grab_score
             logging.info(f"[Arshy | {tf}] Perburuan Likuiditas (Grab): {grab.get('type')} pada level {grab.get('swept_level'):.4f} terdeteksi (Skor: {grab_score:+.2f})")
     if order_blocks:
         nearest_ob = order_blocks[0]
         ob_score = (weights.get('BULLISH_OB', 1.0) if 'BULLISH' in nearest_ob['type'] else weights.get('BEARISH_OB', -1.0)) * nearest_ob['strength']
+        score_components['order_block'] = ob_score
         score += ob_score
-        logging.info(f"[Arshy | {tf}] Zona Order Block: {nearest_ob['type']} terdeteksi (Skor: {ob_score:+.2f})")
+        logging.info(f"[Arshy | {tf}] Zona Order Block: {nearest_ob['type']} @ {nearest_ob['low']:.3f}-{nearest_ob['high']:.3f} terdeteksi (Skor: {ob_score:+.2f})")
 
     # Skor Pola Minor
     pattern_score = sum(weights.get(p.get('type'), 0) for p in patterns)
@@ -164,6 +171,7 @@ def analyze_tf_opportunity(
         bear_summary = ", ".join([f"{count}x {name}" for name, count in Counter(bearish_patterns).items()])
         summary_parts = [s for s in [f"Bullish: [{bull_summary}]" if bull_summary else "", f"Bearish: [{bear_summary}]" if bear_summary else ""] if s]
         logging.info(f"[Arshy | {tf}] Konfluensi Pola Minor: {' | '.join(summary_parts)} (Skor Total: {pattern_score:+.2f})")
+    score_components['patterns'] = pattern_score
     score += pattern_score
     logging.info(f"[Arshy | {tf}] Kalkulasi Skor Awal: {score:.2f}")
 
@@ -173,9 +181,11 @@ def analyze_tf_opportunity(
         bias_score = htf_config.get('bias_influence_score', 2.5)
         penalty_score = htf_config.get('penalty_score', -5.0)
         if (htf_bias == 'BULLISH' and direction_pre_bias == 'BUY') or (htf_bias == 'BEARISH' and direction_pre_bias == 'SELL'):
+            score_components['htf_bias'] = bias_score if direction_pre_bias == 'BUY' else -bias_score
             score += bias_score if direction_pre_bias == 'BUY' else -bias_score
             logging.info(f"[Arshy | {tf}] Validasi Tren HTF: Sinyal {direction_pre_bias} didukung. Skor disesuaikan {bias_score:+.2f}")
         else:
+            score_components['htf_bias'] = penalty_score
             score += penalty_score
             logging.warning(f"[Arshy | {tf}] Validasi Tren HTF: Sinyal {direction_pre_bias} berlawanan dengan bias {htf_bias}. Penalti {penalty_score:.2f} diterapkan.")
     logging.info(f"[Arshy | {tf}] Skor Akhir Terkalkulasi: {score:.2f}")
@@ -255,6 +265,7 @@ def analyze_tf_opportunity(
     return {
         "signal": direction, "order_type": order_type, "entry_price_chosen": entry_price_chosen,
         "sl": sl, "tp": tp, "score": score, "info": "; ".join(info_list),
+        "score_components": score_components,
         "features": get_gng_input_features_full(df, gng_feature_stats, tf) if gng_model else None, 
         "tf": tf, "symbol": symbol,
     }
