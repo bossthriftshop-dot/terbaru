@@ -546,4 +546,67 @@ def calculate_optimal_trade_entry(swing_start_price: float, swing_end_price: flo
         ote_zone['lower'] = low_val + (price_range * fib_levels['0.618'])
     return ote_zone
 
+# ========== CHANGE OF CHARACTER (CHoCH) ==========
+
+def detect_change_of_character(df: pd.DataFrame, swing_lookback: int = 5) -> Optional[Dict[str, Any]]:
+    """
+    Mendeteksi Change of Character (CHoCH), sinyal awal dari potensi reversal.
+    CHoCH terjadi ketika harga menembus swing point minor terakhir setelah sebuah
+    Break of Structure (BOS) terjadi.
+    """
+    if len(df) < swing_lookback * 2 + 5: # Butuh beberapa candle ekstra
+        return None
+
+    _, swing_points = detect_structure(df, swing_lookback)
+    last_high = swing_points.get('last_high')
+    last_low = swing_points.get('last_low')
+
+    # Tidak bisa mendeteksi CHoCH tanpa swing point yang jelas
+    if not last_high or not last_low:
+        return None
+
+    df = df.copy()
+    df['is_swing_high'] = (df['high'] == df['high'].rolling(swing_lookback*2+1, center=True).max())
+    df['is_swing_low'] = (df['low'] == df['low'].rolling(swing_lookback*2+1, center=True).min())
+
+    swing_highs = df[df['is_swing_high']]
+    swing_lows = df[df['is_swing_low']]
+
+    if swing_highs.empty or swing_lows.empty:
+        return None
+
+    # Skenario Bearish CHoCH:
+    # Terjadi setelah Bullish BOS, lalu harga break swing low terakhir.
+    # 1. Cari Bullish BOS terbaru (higher high).
+    if len(swing_highs) >= 2:
+        last_sh = swing_highs.iloc[-1]
+        prev_sh = swing_highs.iloc[-2]
+        if last_sh['high'] > prev_sh['high']: # Indikasi Bullish Trend/BOS
+            # 2. Cari swing low yang terbentuk antara dua swing high ini.
+            relevant_lows = swing_lows[(swing_lows.index > prev_sh.name) & (swing_lows.index < last_sh.name)]
+            if not relevant_lows.empty:
+                choch_level = relevant_lows.iloc[-1]['low']
+                # 3. Cek apakah harga saat ini atau beberapa candle terakhir break di bawah level itu.
+                recent_candles = df.iloc[-3:]
+                if (recent_candles['close'] < choch_level).any():
+                    return {'type': 'BEARISH_CHoCH', 'price': choch_level, 'time': df.iloc[-1]['time']}
+
+    # Skenario Bullish CHoCH:
+    # Terjadi setelah Bearish BOS, lalu harga break swing high terakhir.
+    # 1. Cari Bearish BOS terbaru (lower low).
+    if len(swing_lows) >= 2:
+        last_sl = swing_lows.iloc[-1]
+        prev_sl = swing_lows.iloc[-2]
+        if last_sl['low'] < prev_sl['low']: # Indikasi Bearish Trend/BOS
+            # 2. Cari swing high yang terbentuk antara dua swing low ini.
+            relevant_highs = swing_highs[(swing_highs.index > prev_sl.name) & (swing_highs.index < last_sl.name)]
+            if not relevant_highs.empty:
+                choch_level = relevant_highs.iloc[-1]['high']
+                # 3. Cek apakah harga saat ini atau beberapa candle terakhir break di atas level itu.
+                recent_candles = df.iloc[-3:]
+                if (recent_candles['close'] > choch_level).any():
+                    return {'type': 'BULLISH_CHoCH', 'price': choch_level, 'time': df.iloc[-1]['time']}
+
+    return None
+
 # ========== END OF MODULE ==========

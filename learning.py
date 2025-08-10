@@ -1,9 +1,52 @@
 import json
 import logging
+import sqlite3
+from datetime import datetime
 from typing import Dict, Any, List
 from collections import Counter
-from trade_logger import log_trade_to_db
-from datetime import datetime, timezone
+
+def log_trade_to_db(trade_data: Dict[str, Any], db_path: str):
+    """Mencatat detail trade yang selesai ke database SQLite untuk analisis jangka panjang."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Buat tabel jika belum ada
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS learning_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME,
+            symbol TEXT,
+            profile_name TEXT,
+            result TEXT,
+            initial_score REAL,
+            rr_ratio REAL,
+            invalidation_point REAL,
+            info TEXT,
+            score_components TEXT
+        )
+    ''')
+
+    # Masukkan data
+    cursor.execute('''
+        INSERT INTO learning_log (
+            timestamp, symbol, profile_name, result, initial_score,
+            rr_ratio, invalidation_point, info, score_components
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        datetime.now(),
+        trade_data.get('symbol'),
+        trade_data.get('profile_name'),
+        trade_data.get('result'),
+        trade_data.get('score'),
+        trade_data.get('risk_reward_ratio'),
+        trade_data.get('invalidation_point'),
+        trade_data.get('info'),
+        json.dumps(trade_data.get('score_components'))
+    ))
+
+    conn.commit()
+    conn.close()
+    logging.info("Trade untuk %s berhasil dicatat ke %s.", trade_data.get('symbol'), db_path)
 
 def analyze_and_adapt_profiles(config: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -33,31 +76,6 @@ def analyze_and_adapt_profiles(config: Dict[str, Any]) -> Dict[str, Any]:
         }
         return adapted_weights
 
-    # --- PERBAIKAN: Log trade yang selesai ke database untuk auto-tuning ---
-    for trade in feedback_data:
-        # Hanya log trade yang sudah selesai (win/loss)
-        if trade.get("result") in ["win", "loss"]:
-            try:
-                # Siapkan data untuk logging
-                trade_data_for_log = {
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "symbol": trade.get("symbol"),
-                    "tf": trade.get("tf"),
-                    "entry": trade.get("entry"),
-                    "exit": 0.0,  # Placeholder, karena tidak ada di feedback
-                    "pnl": 1.0 if trade.get("result") == "win" else -1.0,  # Placeholder
-                    "direction": "BUY" if float(trade.get("pnl", 0.0)) > 0 else "SELL", # Placeholder
-                    "features": json.dumps(trade.get("features", {})),
-                    "setup": trade.get("info", ""),
-                    "confidence": trade.get("score", 0.0),
-                    "regime": "ADAPTIVE", # Bisa diubah sesuai konteks
-                }
-                log_trade_to_db(trade_data_for_log)
-                logging.info("Mencatat trade %s untuk %s ke learning_log.db", trade.get("ticket"), trade.get("symbol"))
-            except Exception as e:
-                logging.error("Gagal mencatat trade %s ke log: %s", trade.get("ticket"), e)
-    # --- END PERBAIKAN ---
-
     # Inisialisasi bobot adaptif dengan bobot dasar
     base_weights = config.get("base_weights", {})
     adapted_weights = {
@@ -65,6 +83,23 @@ def analyze_and_adapt_profiles(config: Dict[str, Any]) -> Dict[str, Any]:
         for profile in config.get("strategy_profiles", {})
     }
     
+    # --- PERBAIKAN: Log trade ke DB dan bersihkan file feedback ---
+    db_path = learning_params.get("db_path", "learning_log.db")
+    for trade in feedback_data:
+        try:
+            log_trade_to_db(trade, db_path)
+        except Exception as e:
+            logging.error("Gagal mencatat trade ke DB: %s", e)
+
+    # Setelah semua diproses, kosongkan file feedback untuk mencegah re-learning
+    try:
+        with open(feedback_file, 'w') as f:
+            json.dump([], f)
+        logging.info("File feedback '%s' telah diproses dan dikosongkan.", feedback_file)
+    except Exception as e:
+        logging.error("Gagal mengosongkan file feedback '%s': %s", feedback_file, e)
+    # --- AKHIR PERBAIKAN ---
+
     # Pisahkan feedback berdasarkan profil
     trades_by_profile: Dict[str, List[Dict]] = {}
     for trade in feedback_data:

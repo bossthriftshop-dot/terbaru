@@ -21,6 +21,7 @@ from technical_indicators import (
     detect_engulfing,
     detect_pinbar,
     detect_continuation_patterns,
+    detect_change_of_character,
 )
 from gng_model import (
     get_gng_input_features_full,
@@ -57,30 +58,30 @@ def is_far_enough(entry_price: float, existing_prices: List[float], point_value:
             return False
     return True
 
-def build_signal_format(symbol: str, entry_price: float, direction: str, sl: float, tp: float, order_type: str) -> dict:
+def build_signal_format(symbol: str, entry_price: float, direction: str, sl: float, tp1: float, tp2: float, tp3: float, order_type: str) -> dict:
     signal = {"Symbol": symbol}
     # Disesuaikan dengan case-sensitivity dari MQL dan tambahkan kunci yang hilang
     order_keys = [
-        "BuyEntry", "BuySL", "BuyTP", "SellEntry", "SellSL", "SellTP",
-        "BuyStop", "BuyStopSL", "BuyStopTP", "SellStop", "SellStopSL", "SellStopTP",
-        "Buylimit", "BuylimitSL", "BuylimitTP", "Selllimit", "SelllimitSL", "SellLimitTP",
+        "BuyEntry", "BuySL", "BuyTP", "BuyTP2", "BuyTP3", "SellEntry", "SellSL", "SellTP", "SellTP2", "SellTP3",
+        "BuyStop", "BuyStopSL", "BuyStopTP", "BuyStopTP2", "BuyStopTP3", "SellStop", "SellStopSL", "SellStopTP", "SellStopTP2", "SellStopTP3",
+        "Buylimit", "BuylimitSL", "BuylimitTP", "BuylimitTP2", "BuylimitTP3", "Selllimit", "SelllimitSL", "SellLimitTP", "SellLimitTP2", "SellLimitTP3",
         "DeleteLimit/Stop"
     ]
     for key in order_keys:
         signal[key] = ""
     order_type_upper = order_type.upper()
     if order_type_upper == 'BUY':
-        signal.update({"BuyEntry": str(entry_price), "BuySL": str(sl), "BuyTP": str(tp)})
+        signal.update({"BuyEntry": str(entry_price), "BuySL": str(sl), "BuyTP": str(tp1), "BuyTP2": str(tp2), "BuyTP3": str(tp3)})
     elif order_type_upper == 'SELL':
-        signal.update({"SellEntry": str(entry_price), "SellSL": str(sl), "SellTP": str(tp)})
+        signal.update({"SellEntry": str(entry_price), "SellSL": str(sl), "SellTP": str(tp1), "SellTP2": str(tp2), "SellTP3": str(tp3)})
     elif order_type_upper == 'BUY_LIMIT':
-        signal.update({"Buylimit": str(entry_price), "BuylimitSL": str(sl), "BuylimitTP": str(tp)})
+        signal.update({"Buylimit": str(entry_price), "BuylimitSL": str(sl), "BuylimitTP": str(tp1), "BuylimitTP2": str(tp2), "BuylimitTP3": str(tp3)})
     elif order_type_upper == 'SELL_LIMIT':
-        signal.update({"Selllimit": str(entry_price), "SelllimitSL": str(sl), "SellLimitTP": str(tp)})
+        signal.update({"Selllimit": str(entry_price), "SelllimitSL": str(sl), "SellLimitTP": str(tp1), "SellLimitTP2": str(tp2), "SellLimitTP3": str(tp3)})
     elif order_type_upper == 'BUY_STOP':
-        signal.update({"BuyStop": str(entry_price), "BuyStopSL": str(sl), "BuyStopTP": str(tp)})
+        signal.update({"BuyStop": str(entry_price), "BuyStopSL": str(sl), "BuyStopTP": str(tp1), "BuyStopTP2": str(tp2), "BuyStopTP3": str(tp3)})
     elif order_type_upper == 'SELL_STOP':
-        signal.update({"SellStop": str(entry_price), "SellStopSL": str(sl), "SellStopTP": str(tp)})
+        signal.update({"SellStop": str(entry_price), "SellStopSL": str(sl), "SellStopTP": str(tp1), "SellStopTP2": str(tp2), "SellStopTP3": str(tp3)})
     return signal
 
 def make_signal_id(signal_json: Dict[str, str]) -> str:
@@ -113,7 +114,8 @@ def analyze_tf_opportunity(
     order_blocks = detect_order_blocks_multi(df, structure_filter=structure_str)
     fvg_zones = detect_fvg_multi(df)
     liquidity_sweep = detect_liquidity_sweep(df)
-    liquidity_grabs = detect_liquidity_grab(df) # <-- DITAMBAHKAN DI SINI
+    liquidity_grabs = detect_liquidity_grab(df)
+    choch = detect_change_of_character(df)
     patterns = detect_engulfing(df) + detect_pinbar(df) + detect_continuation_patterns(df)
     
     # --- Kalkulasi Skor ---
@@ -133,6 +135,12 @@ def analyze_tf_opportunity(
     score_components['structure'] = structure_score
     score += structure_score
     logging.info(f"[Arshy | {tf}] Analisis Struktur: Teridentifikasi '{structure_str}' (Skor: {structure_score:+.2f})")
+
+    if choch:
+        choch_score = weights.get(choch['type'], 0.0)
+        score_components['choch'] = choch_score
+        score += choch_score
+        logging.info(f"[Arshy | {tf}] Perubahan Karakter (CHoCH): {choch['type']} @ {choch['price']:.3f} terdeteksi (Skor: {choch_score:+.2f})")
 
     # Skor Zona (FVG, OB) & Event (LS)
     if fvg_zones:
@@ -197,26 +205,32 @@ def analyze_tf_opportunity(
 
     if score >= confidence_threshold:
         direction = "BUY"
-        # 1. Cek Setup Retracement (LIMIT)
-        bullish_poi = sorted([z for z in fvg_zones if 'BULLISH' in z['type'] and z['start'] < current_price] + 
-                               [z for z in order_blocks if 'BULLISH' in z['type'] and z['high'] < current_price], 
-                               key=lambda z: z['distance'])
-        if bullish_poi:
-            best_zone = bullish_poi[0]
-            swing_start, swing_end = best_zone.get('end', best_zone.get('low')), best_zone.get('start', best_zone.get('high'))
-            ote_price = calculate_optimal_trade_entry(swing_start, swing_end, direction).get('mid')
-            if ote_price and ote_price < current_price:
-                order_type, entry_price_chosen = "BUY_LIMIT", ote_price
-                info_list.append(f"BUY_LIMIT based on {best_zone['type']} OTE")
-                logging.info(f"[Arshy | {tf}] Setup Teridentifikasi: Pullback ke {best_zone['type']}. Menggunakan BUY_LIMIT.")
-        
-        # 2. Cek Setup Breakout (STOP)
-        if not order_type and "BULLISH_BOS" in structure_str and swing_points.get('last_high'):
-            order_type, entry_price_chosen = "BUY_STOP", swing_points['last_high'] + (atr * 0.1)
-            info_list.append(f"BUY_STOP based on BULLISH_BOS")
-            logging.info(f"[Arshy | {tf}] Setup Teridentifikasi: Konfirmasi Breakout. Menggunakan BUY_STOP.")
+        # 1. Cek Skenario Reversal (CHoCH + Sweep/Grab)
+        if choch and choch.get('type') == 'BULLISH_CHoCH' and (liquidity_sweep or liquidity_grabs):
+            order_type, entry_price_chosen = "BUY", current_price
+            info_list.append(f"REVERSAL BUY based on BULLISH_CHoCH and Liquidity event.")
+            logging.info(f"[Arshy | {tf}] Setup Teridentifikasi: Reversal (CHoCH + Liquidity). Menggunakan MARKET BUY.")
+        # 2. Cek Skenario Continuation - Pullback (LIMIT)
+        elif "BULLISH" in structure_str:
+            bullish_poi = sorted([z for z in fvg_zones if 'BULLISH' in z['type'] and z['start'] < current_price] +
+                                   [z for z in order_blocks if 'BULLISH' in z['type'] and z['high'] < current_price],
+                                   key=lambda z: z['distance'])
+            if bullish_poi:
+                best_zone = bullish_poi[0]
+                swing_start, swing_end = best_zone.get('end', best_zone.get('low')), best_zone.get('start', best_zone.get('high'))
+                ote_price = calculate_optimal_trade_entry(swing_start, swing_end, direction).get('mid')
+                if ote_price and ote_price < current_price:
+                    order_type, entry_price_chosen = "BUY_LIMIT", ote_price
+                    info_list.append(f"CONTINUATION BUY_LIMIT based on {best_zone['type']} OTE")
+                    logging.info(f"[Arshy | {tf}] Setup Teridentifikasi: Pullback ke {best_zone['type']}. Menggunakan BUY_LIMIT.")
 
-        # 3. Default ke Market Order jika momentum kuat
+            # 3. Cek Skenario Continuation - Breakout (STOP)
+            if not order_type and "BULLISH_BOS" in structure_str and swing_points.get('last_high'):
+                order_type, entry_price_chosen = "BUY_STOP", swing_points['last_high'] + (atr * 0.1)
+                info_list.append(f"CONTINUATION BUY_STOP based on BULLISH_BOS")
+                logging.info(f"[Arshy | {tf}] Setup Teridentifikasi: Konfirmasi Breakout. Menggunakan BUY_STOP.")
+
+        # 4. Default ke Market Order jika momentum kuat
         if not order_type:
             order_type, entry_price_chosen = "BUY", current_price
             info_list.append("BUY market order based on strong bullish score.")
@@ -224,26 +238,32 @@ def analyze_tf_opportunity(
 
     elif score <= -confidence_threshold:
         direction = "SELL"
-        # 1. Cek Setup Retracement (LIMIT)
-        bearish_poi = sorted([z for z in fvg_zones if 'BEARISH' in z['type'] and z['start'] > current_price] + 
-                               [z for z in order_blocks if 'BEARISH' in z['type'] and z['low'] > current_price], 
-                               key=lambda z: z['distance'])
-        if bearish_poi:
-            best_zone = bearish_poi[0]
-            swing_start, swing_end = best_zone.get('start', best_zone.get('high')), best_zone.get('end', best_zone.get('low'))
-            ote_price = calculate_optimal_trade_entry(swing_start, swing_end, direction).get('mid')
-            if ote_price and ote_price > current_price:
-                order_type, entry_price_chosen = "SELL_LIMIT", ote_price
-                info_list.append(f"SELL_LIMIT based on {best_zone['type']} OTE")
-                logging.info(f"[Arshy | {tf}] Setup Teridentifikasi: Pullback ke {best_zone['type']}. Menggunakan SELL_LIMIT.")
+        # 1. Cek Skenario Reversal (CHoCH + Sweep/Grab)
+        if choch and choch.get('type') == 'BEARISH_CHoCH' and (liquidity_sweep or liquidity_grabs):
+            order_type, entry_price_chosen = "SELL", current_price
+            info_list.append(f"REVERSAL SELL based on BEARISH_CHoCH and Liquidity event.")
+            logging.info(f"[Arshy | {tf}] Setup Teridentifikasi: Reversal (CHoCH + Liquidity). Menggunakan MARKET SELL.")
+        # 2. Cek Skenario Continuation - Pullback (LIMIT)
+        elif "BEARISH" in structure_str:
+            bearish_poi = sorted([z for z in fvg_zones if 'BEARISH' in z['type'] and z['start'] > current_price] +
+                                   [z for z in order_blocks if 'BEARISH' in z['type'] and z['low'] > current_price],
+                                   key=lambda z: z['distance'])
+            if bearish_poi:
+                best_zone = bearish_poi[0]
+                swing_start, swing_end = best_zone.get('start', best_zone.get('high')), best_zone.get('end', best_zone.get('low'))
+                ote_price = calculate_optimal_trade_entry(swing_start, swing_end, direction).get('mid')
+                if ote_price and ote_price > current_price:
+                    order_type, entry_price_chosen = "SELL_LIMIT", ote_price
+                    info_list.append(f"CONTINUATION SELL_LIMIT based on {best_zone['type']} OTE")
+                    logging.info(f"[Arshy | {tf}] Setup Teridentifikasi: Pullback ke {best_zone['type']}. Menggunakan SELL_LIMIT.")
 
-        # 2. Cek Setup Breakout (STOP)
-        if not order_type and "BEARISH_BOS" in structure_str and swing_points.get('last_low'):
-            order_type, entry_price_chosen = "SELL_STOP", swing_points['last_low'] - (atr * 0.1)
-            info_list.append(f"SELL_STOP based on BEARISH_BOS")
-            logging.info(f"[Arshy | {tf}] Setup Teridentifikasi: Konfirmasi Breakout. Menggunakan SELL_STOP.")
+            # 3. Cek Skenario Continuation - Breakout (STOP)
+            if not order_type and "BEARISH_BOS" in structure_str and swing_points.get('last_low'):
+                order_type, entry_price_chosen = "SELL_STOP", swing_points['last_low'] - (atr * 0.1)
+                info_list.append(f"CONTINUATION SELL_STOP based on BEARISH_BOS")
+                logging.info(f"[Arshy | {tf}] Setup Teridentifikasi: Konfirmasi Breakout. Menggunakan SELL_STOP.")
 
-        # 3. Default ke Market Order
+        # 4. Default ke Market Order
         if not order_type:
             order_type, entry_price_chosen = "SELL", current_price
             info_list.append("SELL market order based on strong bearish score.")
@@ -253,19 +273,29 @@ def analyze_tf_opportunity(
     if direction == "WAIT":
         return None
 
-    sl, tp = 0.0, 0.0
+    sl, tp1, tp2, tp3 = 0.0, 0.0, 0.0, 0.0
+    risk = atr * 1.5
     if direction == "BUY":
-        sl = entry_price_chosen - (atr * 1.5)
-        tp = entry_price_chosen + (atr * 3.0)
+        sl = entry_price_chosen - risk
+        tp1 = entry_price_chosen + (risk * 1.5)
+        tp2 = entry_price_chosen + (risk * 2.0)
+        tp3 = entry_price_chosen + (risk * 3.0)
     elif direction == "SELL":
-        sl = entry_price_chosen + (atr * 1.5)
-        tp = entry_price_chosen - (atr * 3.0)
+        sl = entry_price_chosen + risk
+        tp1 = entry_price_chosen - (risk * 1.5)
+        tp2 = entry_price_chosen - (risk * 2.0)
+        tp3 = entry_price_chosen - (risk * 3.0)
+
+    invalidation_point = sl
+    risk_reward_ratio = (tp3 - entry_price_chosen) / (entry_price_chosen - sl) if direction == "BUY" else (entry_price_chosen - tp3) / (sl - entry_price_chosen)
 
     logging.info(f"[Arshy | {tf}] --- Analisis Selesai --- | Rekomendasi: {direction} | Tipe: {order_type} | Skor Keyakinan: {score:.2f}")
     return {
         "signal": direction, "order_type": order_type, "entry_price_chosen": entry_price_chosen,
-        "sl": sl, "tp": tp, "score": score, "info": "; ".join(info_list),
+        "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3, "score": score, "info": "; ".join(info_list),
         "score_components": score_components,
+        "invalidation_point": invalidation_point,
+        "risk_reward_ratio": risk_reward_ratio,
         "features": get_gng_input_features_full(df, gng_feature_stats, tf) if gng_model else None, 
         "tf": tf, "symbol": symbol,
     }

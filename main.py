@@ -109,11 +109,16 @@ def handle_opportunity(opp: Dict[str, Any], symbol: str, tf: str, config: Dict[s
     # --- Persiapan & Pengiriman Sinyal ---
     order_type_to_use = opp.get('order_type', opp['signal'])
     signal_json = build_signal_format(
-        symbol=symbol, entry_price=float(opp['entry_price_chosen']), 
-        direction=opp['signal'], sl=float(opp['sl']), tp=float(opp['tp']), 
+        symbol=symbol,
+        entry_price=float(opp['entry_price_chosen']),
+        direction=opp['signal'],
+        sl=float(opp['sl']),
+        tp1=float(opp.get('tp1', 0.0)),
+        tp2=float(opp.get('tp2', 0.0)),
+        tp3=float(opp.get('tp3', 0.0)),
         order_type=order_type_to_use
     )
-    
+
     # Payload sekarang menyertakan semua konteks untuk pembelajaran
     payload = {
         "symbol": symbol,
@@ -124,7 +129,11 @@ def handle_opportunity(opp: Dict[str, Any], symbol: str, tf: str, config: Dict[s
         "order_type": order_type_to_use,
         "score": opp.get('score'),
         "info": opp.get('info'),
-        "profile_name": profile_name
+        "profile_name": profile_name,
+        # Menambahkan data pembelajaran baru
+        "risk_reward_ratio": opp.get('risk_reward_ratio'),
+        "invalidation_point": opp.get('invalidation_point'),
+        "score_components": opp.get('score_components', {})
     }
     
     send_status = send_signal_to_server(**payload)
