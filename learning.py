@@ -2,6 +2,8 @@ import json
 import logging
 from typing import Dict, Any, List
 from collections import Counter
+from trade_logger import log_trade_to_db
+from datetime import datetime, timezone
 
 def analyze_and_adapt_profiles(config: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -30,6 +32,31 @@ def analyze_and_adapt_profiles(config: Dict[str, Any]) -> Dict[str, Any]:
             for profile in config.get("strategy_profiles", {})
         }
         return adapted_weights
+
+    # --- PERBAIKAN: Log trade yang selesai ke database untuk auto-tuning ---
+    for trade in feedback_data:
+        # Hanya log trade yang sudah selesai (win/loss)
+        if trade.get("result") in ["win", "loss"]:
+            try:
+                # Siapkan data untuk logging
+                trade_data_for_log = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "symbol": trade.get("symbol"),
+                    "tf": trade.get("tf"),
+                    "entry": trade.get("entry"),
+                    "exit": 0.0,  # Placeholder, karena tidak ada di feedback
+                    "pnl": 1.0 if trade.get("result") == "win" else -1.0,  # Placeholder
+                    "direction": "BUY" if float(trade.get("pnl", 0.0)) > 0 else "SELL", # Placeholder
+                    "features": json.dumps(trade.get("features", {})),
+                    "setup": trade.get("info", ""),
+                    "confidence": trade.get("score", 0.0),
+                    "regime": "ADAPTIVE", # Bisa diubah sesuai konteks
+                }
+                log_trade_to_db(trade_data_for_log)
+                logging.info("Mencatat trade %s untuk %s ke learning_log.db", trade.get("ticket"), trade.get("symbol"))
+            except Exception as e:
+                logging.error("Gagal mencatat trade %s ke log: %s", trade.get("ticket"), e)
+    # --- END PERBAIKAN ---
 
     # Inisialisasi bobot adaptif dengan bobot dasar
     base_weights = config.get("base_weights", {})

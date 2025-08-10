@@ -81,7 +81,7 @@ def get_candlestick_data(symbol: str, tf: str, bars: int, mt5_path: str, retry: 
                 mt5.shutdown()
                 continue
             df = pd.DataFrame(rates)
-            df['time'] = pd.to_datetime(df['time'], unit='s')
+            df['time'] = pd.to_datetime(df['time'], unit='s', utc=True)
             mt5.shutdown()
             return df
         except Exception as e:

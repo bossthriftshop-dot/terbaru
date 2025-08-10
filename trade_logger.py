@@ -1,6 +1,6 @@
 import sqlite3
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 def log_trade_to_db(trade_data, db_path='learning_log.db'):
     """
@@ -21,7 +21,7 @@ def log_trade_to_db(trade_data, db_path='learning_log.db'):
     # Normalisasi timestamp
     ts = trade_data.get('timestamp')
     if ts is None:
-        ts = datetime.now().isoformat()
+        ts = datetime.now(timezone.utc).isoformat()
     elif isinstance(ts, datetime):
         ts = ts.isoformat()
 
